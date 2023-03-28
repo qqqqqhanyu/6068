@@ -1,0 +1,987 @@
+---
+title: "final code"
+output: html_document
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE)
+library(readr)
+library(ggplot2)
+library(caret)
+library(e1071)
+library(class)
+library(pROC)
+library(MASS)
+library(readxl)
+library(plyr)
+library(drc)
+setwd("~/Desktop/paper latest edition")
+library(tidyverse)
+library(mgcv)
+`%!in%` = Negate(`%in%`)
+RMSE<-function(yhat,y){
+  sqrt(mean((yhat-y)^2))
+}
+```
+
+### Load the data
+```{r}
+data = read_csv("project data.csv")
+final_data<-data[,1:148] #The features from impedance curve, which are the inputs in SML models
+colnames(final_data)[c(147,148)] = c("C","id")
+full_data = data[,149:150] #The features from ECM, which are the inputs for nonlinear regression
+full_data$id = final_data$id
+full_data$C = final_data$C
+```
+
+
+###Visualize the raw data
+### Real impedance curve
+```{r}
+signal = numeric()
+for( i in 1:120) {
+  signal = c(signal,as.numeric(final_data[i,1:73])) 
+}
+logc = rep(final_data$C,each = 73) 
+index = rep(1:73,120)
+id = rep(1:15,each = 73)
+ids = rep(id,8)
+std = apply(final_data, 2, sd)[1:73 ]
+newdate = data.frame(logc = logc, signal = signal, index = index)
+newdate$id = ids
+newdate$obsid = rep(1:120,each = 73)
+newdate$obsid = as.factor(newdate$obsid)
+newdate$id = as.factor(newdate$id)
+load("~/Desktop/paper latest edition/freq.RData")
+freq = rep(freq,120)
+
+```
+
+
+
+```{r}
+my_text1 = element_text(size = 12)
+my_text2 = element_text(size = 15,face = "bold")
+ggplot(data = newdate)+aes(x = log(freq),y = log(signal))+geom_line(aes(color = id),size = 0.3)+
+  facet_wrap(~logc)+ylab("Signal [log-Ohm]") +theme(axis.text.y = my_text1)+ 
+  xlab("Frequency [log-Hz]")+ theme(axis.text.x = my_text1)+theme(axis.title.x = my_text2)+
+  theme(axis.title.y = my_text2)+ggtitle("Real impedance curve ")+theme(title = my_text2)+
+  theme(strip.text  = my_text1)
+newdate$freq = freq
+```
+
+```{r}
+ggplot(data = subset(newdate,logc ==1))+aes(x = log(freq),y = log(signal))+geom_line(aes(color = id),size = 0.3)+ylab("Signal [log-Ohm]") +theme(axis.text.y = my_text1)+ 
+  xlab("Frequency [log-Hz]")+ theme(axis.text.x = my_text1)+theme(axis.title.x = my_text2)+
+  theme(axis.title.y = my_text2)+ggtitle("Real impedance curve ")+theme(title = my_text2)+
+  theme(strip.text  = my_text1)+theme(legend.position = "none")#+theme_bw()
+```
+
+
+### Imaginary impedance curve
+```{r}
+signal = numeric(0)
+for( i in 1:120) {
+  signal = c(signal,as.numeric(final_data[i,74:146])) 
+}
+logc = rep(final_data$C,each = 73) 
+index = rep(1:73,120)
+id = rep(1:15,each = 73)
+ids = rep(id,8)
+std = apply(final_data, 2, sd)[1:73 ]
+newdate = data.frame(logc = logc, signal = signal, index = index)
+newdate$id = ids
+newdate$obsid = rep(1:120,each = 73)
+newdate$obsid = as.factor(newdate$obsid)
+newdate$id = as.factor(newdate$id)
+load("~/Desktop/paper latest edition/freq.RData")
+freq = rep(freq,120)
+
+```
+
+```{r}
+my_text1 = element_text(size = 12)
+my_text2 = element_text(size = 15,face = "bold")
+ggplot(data = newdate)+aes(x = log(freq),y = log(signal))+geom_line(aes(color = id),size = 0.3)+
+  facet_wrap(~logc)+ylab("Signal [log-Ohm]") +theme(axis.text.y = my_text1)+ 
+  xlab("Frequency [log-Hz]")+ theme(axis.text.x = my_text1)+theme(axis.title.x = my_text2)+
+  theme(axis.title.y = my_text2)+ggtitle("Imaginary impedance curve")+theme(title = my_text2)+
+  theme(strip.text  = my_text1)
+```
+### PCA to reduce data dimension and visualization
+```{r}
+pca<-prcomp(final_data[,c(1:146)],scale. = T)
+sum(pca$sdev[1]^2+pca$sdev[2]^2)/sum(pca$sdev^2) # variance explained
+rddata<-pca$x[,1:2] #select the first two components
+rddata<-as.data.frame(rddata)
+rddata$C<-final_data$C
+rddata$id<-final_data$id
+value=c(rddata$PC1,rddata$PC2)
+c1<-c(rddata$C,rddata$C)
+parameter<-c(rep(c("PC1","PC2"),each=120))
+data1<-data.frame(value=value,concentration=c1,parameter=parameter)
+data2 <- data1 %>% group_by(parameter,concentration) %>% summarise(Average_value=mean(value),SE=sd(value)/sqrt(15))
+data2
+pcplot1<-ggplot(data2,aes(x=concentration,y=Average_value))+
+  geom_errorbar(aes(ymin=Average_value-SE,ymax=Average_value+SE,color=parameter),width=0.5)+
+  geom_line(aes(color=parameter))+theme_bw()
+pcplot1
+```
+
+### Fig 2(c).
+```{r}
+rddata$PC1=-rddata$PC1
+text_fond = element_text(color="black", size=14, face="bold")
+model_pc1 = gam(PC1 ~ s(C,k=5),data = rddata)
+x = seq(0,7,length = 100)
+newdata = data.frame(C = x)
+estimate_PC1 = predict(model_pc1,newdata,se.fit = T)
+gam_pc1 = data.frame(C = x,fitted = estimate_PC1$fit,se = estimate_PC1$se.fit)
+gam_pc1$lower = gam_pc1$fitted-gam_pc1$se*1.96
+gam_pc1$upper = gam_pc1$fitted+gam_pc1$se*1.96
+sigma = sqrt(model_pc1$sig2)
+gam_pc1$PI_lower = gam_pc1$fitted-(gam_pc1$se+sigma)*1.96
+gam_pc1$PI_upper = gam_pc1$fitted+(gam_pc1$se+sigma)*1.96
+plot_pc1 = ggplot(data = rddata)+geom_point(aes(x = C,y = PC1),size = 1)
+plot_pc1 = plot_pc1+geom_line(data = gam_pc1,aes(x=C,y=fitted),color = "black",size = 1)+
+  geom_ribbon(data=gam_pc1,aes(ymin=lower,ymax=upper,xmin = 0,xmax = 7,x = C,y=fitted), 
+              fill="gray", alpha=0.5)+theme_bw()+geom_line(data = gam_pc1,aes(x=C,y=PI_lower),
+                                                           lty=2,color = "black")+
+  geom_line(data = gam_pc1,aes(x=C,y=PI_upper),lty=2,color = "black")
+plot_pc1+xlab("log CFU/ml")+ylab("PC1")+theme(axis.title.y = text_fond,axis.title.x = text_fond)
+```
+
+### Fig 2(d)
+```{r}
+text_fond = element_text(color="black", size=14, face="bold")
+model_pc2 = gam(PC2 ~ s(C,k=5),data = rddata)
+x = seq(0,7,length = 100)
+newdata = data.frame(C = x)
+estimate_PC2 = predict(model_pc2,newdata,se.fit = T)
+gam_pc2 = data.frame(C = x,fitted = estimate_PC2$fit,se = estimate_PC2$se.fit)
+gam_pc2$lower = gam_pc2$fitted-gam_pc2$se*1.96
+gam_pc2$upper = gam_pc2$fitted+gam_pc2$se*1.96
+sigma = sqrt(model_pc2$sig2)
+gam_pc2$PI_lower = gam_pc2$fitted-(gam_pc2$se+sigma)*1.96
+gam_pc2$PI_upper = gam_pc2$fitted+(gam_pc2$se+sigma)*1.96
+plot_pc2 = ggplot(data = rddata)+geom_point(aes(x = C,y = PC2),size = 1)
+plot_pc2 = plot_pc2+geom_line(data = gam_pc2,aes(x=C,y=fitted),color = "black",size = 1)+
+  geom_ribbon(data=gam_pc2,aes(ymin=lower,ymax=upper,xmin = 0,xmax = 7,x = C,y=fitted), 
+              fill="gray", alpha=0.5)+theme_bw()+geom_line(data = gam_pc2,aes(x=C,y=PI_lower),
+                                                           lty=2,color = "black")+
+  geom_line(data = gam_pc2,aes(x=C,y=PI_upper),lty=2,color = "black")
+plot_pc2+xlab("log CFU/ml")+ylab("PC2")+theme(axis.title.y = text_fond,axis.title.x = text_fond)
+```
+### Fig 2(a)(b)
+```{r}
+text_fond = element_text(color="black", size=14, face="bold")
+model_rct = gam(RCT ~ s(C,k=5),data = full_data)
+x = seq(0,7,length = 100)
+newdata = data.frame(C = x)
+estimate_rct = predict(model_rct,newdata,se.fit = T)
+gam_rct = data.frame(C = x,fitted = estimate_rct$fit,se = estimate_rct$se.fit)
+gam_rct$lower = gam_rct$fitted-gam_rct$se*1.96
+gam_rct$upper = gam_rct$fitted+gam_rct$se*1.96
+sigma = sqrt(model_rct$sig2)
+gam_rct$PI_lower = gam_rct$fitted-(gam_rct$se+sigma)*1.96
+gam_rct$PI_upper = gam_rct$fitted+(gam_rct$se+sigma)*1.96
+plot_rct = ggplot(data = full_data)+geom_point(aes(x = C,y = RCT),size = 1)
+plot_rct = plot_rct+geom_line(data = gam_rct,aes(x=C,y=fitted),color = "black",size = 1)+
+  geom_ribbon(data=gam_rct,aes(ymin=lower,ymax=upper,xmin = 0,xmax = 7,x = C,y=fitted), 
+              fill="gray", alpha=0.5)+theme_bw()+geom_line(data = gam_rct,aes(x=C,y=PI_lower),
+ lty=2,color = "black")+geom_line(data = gam_rct,aes(x=C,y=PI_upper),lty=2,color = "black")
+plot_rct+xlab("log CFU/ml")+ylab("Rct (\u03a9)")+theme(axis.title.y = text_fond,axis.title.x = text_fond)
+
+
+model_cdl = gam(CF ~ s(C,k=5),data = full_data)
+x = seq(0,7,length = 100)
+newdata = data.frame(C = x)
+estimate_cdl = predict(model_cdl,newdata,se.fit = T)
+gam_cdl = data.frame(C = x,fitted = estimate_cdl$fit,se = estimate_cdl$se.fit)
+gam_cdl$lower = gam_cdl$fitted-gam_cdl$se*1.96
+gam_cdl$upper = gam_cdl$fitted+gam_cdl$se*1.96
+sigma = sqrt(model_cdl$sig2)
+gam_cdl$PI_lower = gam_cdl$fitted-(gam_cdl$se+sigma)*1.96
+gam_cdl$PI_upper = gam_cdl$fitted+(gam_cdl$se+sigma)*1.96
+plot_cdl = ggplot(data = full_data)+geom_point(aes(x = C,y = CF),size = 1)
+plot_cdl = plot_cdl+geom_line(data = gam_cdl,aes(x=C,y=fitted),color = "black",size = 1)+
+  geom_ribbon(data=gam_cdl,aes(ymin=lower,ymax=upper,xmin = 0,xmax = 7,x = C,y=fitted), 
+              fill="gray", alpha=0.5)+theme_bw()+geom_line(data = gam_cdl,aes(x=C,y=PI_lower),
+              lty=2,color = "black")+geom_line(data = gam_cdl,aes(x=C,y=PI_upper),lty=2,color = "black")
+plot_cdl+xlab("log CFU/ml")+ylab("Cdl (\u00b5F)")+theme(axis.title.y = text_fond,axis.title.x = text_fond)
+```
+### Nonlinear models
+### Load the data
+```{r}
+rm(list = ls())
+data = read_csv("project data.csv")
+final_data<-data[,1:148] #The features from impedance curve, which are the inputs in SML models
+colnames(final_data)[c(147,148)] = c("C","id")
+full_data = data[,149:150] #The features from ECM, which are the inputs for nonlinear regression
+full_data$id = final_data$id
+full_data$C = final_data$C
+pca<-prcomp(final_data[,c(1:146)],scale. = T)
+sum(pca$sdev[1]^2+pca$sdev[2]^2)/sum(pca$sdev^2) # variance explained
+rddata<-pca$x[,1:2] #select the first two components
+rddata<-as.data.frame(rddata)
+rddata$C<-final_data$C
+rddata$id<-final_data$id
+`%!in%` = Negate(`%in%`)
+RMSE<-function(yhat,y){
+  sqrt(mean((yhat-y)^2))
+}
+```
+
+
+```{r,warning=FALSE}
+full_data$C<-ifelse(full_data$C>=4,4,full_data$C) ###Modify the concentration
+f1<-function(RCT,CF,c,d ,beta0,beta1,beta2){
+  c+(d-c)*(exp(beta0+beta1*RCT+beta2*CF)/(1+exp(beta0+beta1*RCT+beta2*CF)))
+} #f1 is the logistic regression
+f2<-function(RCT,CF,d,e1,e2,e0){
+  d*(1+e0-exp(-RCT/e1)-exp(-CF/e2))
+}#f2 is the asymptotic regression
+
+nls.fit1.rmse<-numeric(0)
+nlme.fit1.rmse<-numeric(0)
+nls.fit2.rmse<-numeric(0)
+nlme.fit2.rmse<-numeric(0)
+gam.rmse<-numeric(0)
+gamm.rmse<-numeric(0)
+for (i in 1:100) {
+  print(i)
+  set.seed(i+1)
+  ids<-sample(1:120,96)  #20% to training set
+  train<-full_data[ids,]
+  test<-full_data[-ids,]
+  nls.model1<-nls(C~f1(RCT,CF,c,d,beta0,beta1,beta2),data = train,start = c(c=0,d=7,beta0=-4,beta1 = 0.00004,beta2 = 0.002))
+  nls.fit1.yhat<-predict(nls.model1,test)
+  nls.fit1.rmse[i]<-RMSE(nls.fit1.yhat,test$C)
+  nlme.model1<-nlme(C~f1(RCT,CF,c,d,beta0,beta1,beta2),fixed = c+d+beta0+beta1+beta2~1,random = beta0~1|id,data = train,start = c(c=0,d=4,beta0=-4,beta1 = 0.00004,beta2 = 0.002))
+  nlme.fit1.yhat<-predict(nlme.model1,test)
+  nlme.fit1.rmse[i]<-RMSE(nlme.fit1.yhat,test$C)
+  try(nls.model2<-nls(C~f2(RCT,CF,d,e1,e2,e0),data = train,start = c(e0 = 0,d=4, e1=3000, e2   =3000)),silent = T)
+  nls.fit2.yhat<-predict(nls.model2,test)
+  nls.fit2.rmse[i]<-RMSE(nls.fit2.yhat,test$C)
+  try(nlme.model2<-nlme(C~f2(RCT,CF,d,e1,e2,e0),fixed = e0+d+e1+e2~1,random = e0~1|id,
+                        data = train,start = c(d=4, e0=1,e1=3000, e2 =3000)),silent = T)
+  nlme.fit2.yhat<-predict(nlme.model2,test)
+  nlme.fit2.rmse[i]<-RMSE(nlme.fit2.yhat,test$C)
+  gam_fit = gam(C~s(RCT,k = 3)+s(CF,k = 3),data = train)
+  gam_yhat = predict(gam_fit,test)
+  gam.rmse[i] = RMSE(gam_yhat,test$C)
+  gamm_fit = gam(C~s(RCT,k=3)+s(CF,k=3)+s(id,bs = "re"),data = train)
+  gamm_yhat = predict(gamm_fit,test)
+  gamm.rmse[i] = RMSE(gamm_yhat,test$C)
+}
+
+```
+
+
+```{r}
+fixed.rmse.ci<-matrix(0,nrow = 3,ncol = 2)
+fixed.rmse.ci[1,]<-quantile(nls.fit1.rmse,c(0.025,0.975))
+fixed.rmse.ci[2,]<-quantile(nls.fit2.rmse,c(0.025,0.975))
+fixed.rmse.ci[3,]<-quantile(gam.rmse,c(0.025,0.975))
+mixed.rmse.ci<-matrix(0,nrow = 3,ncol = 2)
+mixed.rmse.ci[1,]<-quantile(nlme.fit1.rmse,c(0.025,0.975))
+mixed.rmse.ci[2,]<-quantile(nlme.fit2.rmse,c(0.025,0.975))
+mixed.rmse.ci[3,]<-quantile(gamm.rmse,c(0.025,0.975))
+```
+
+
+### Load the data
+```{r}
+rm(list = ls())
+data = read_csv("project data.csv")
+final_data<-data[,1:148] #The features from impedance curve, which are the inputs in SML models
+colnames(final_data)[c(147,148)] = c("C","id")
+full_data = data[,149:150] #The features from ECM, which are the inputs for nonlinear regression
+full_data$id = final_data$id
+full_data$C = final_data$C
+pca<-prcomp(final_data[,c(1:146)],scale. = T)
+sum(pca$sdev[1]^2+pca$sdev[2]^2)/sum(pca$sdev^2) # variance explained
+rddata<-pca$x[,1:2] #select the first two components
+rddata<-as.data.frame(rddata)
+rddata$C<-final_data$C
+rddata$id<-final_data$id
+`%!in%` = Negate(`%in%`)
+RMSE<-function(yhat,y){
+  sqrt(mean((yhat-y)^2))
+}
+```
+### SML models
+## Aggregated concentration
+```{r,warning=FALSE}
+rmse_svm<-numeric(0)
+rmse_ridge<-numeric(0)
+rmse_pls<-numeric(0)
+rmse_rf<-numeric(0)
+rmse_bst <- numeric(0)
+for (i in 1:100) {
+  set.seed(i)
+  print(i)
+  id_test<-sample(1:15,3)
+  test_ml_rd<-subset(rddata,id %in% id_test)
+  train_ml_rd<-subset(rddata,id %!in% id_test)
+  test_ml_rd$C<-ifelse(test_ml_rd$C>=4,4,test_ml_rd$C)#Transfer the C
+  train_ml_rd$C<-ifelse(train_ml_rd$C>=4,4,train_ml_rd$C)
+  x<-rep(unique(train_ml_rd$id),each = 8)
+  folds<-groupKFold(x,k = length(unique(x))) 
+  folds2 <- lapply(folds, function(x) lapply(1:6, function(i) sample(x, size = length(x), replace = TRUE)))  ##sample the id 
+  folds2 <- unlist(folds2 , recursive = FALSE, use.names = TRUE)
+  svm_formual<-train(C~PC1+PC2,data = train_ml_rd,trControl = trainControl(method = "repeatedcv" , index = folds2),method = "svmRadial")
+  yhat = predict(svm_formual,test_ml_rd)
+  rmse_svm[i]<-RMSE(yhat,test_ml_rd$C)
+  
+#boost 
+  boost<-train(C~PC1+PC2,data = train_ml_rd,trControl = trainControl(method = "repeatedcv" , index = folds2),method = "BstLm")
+  yhat = predict(boost,test_ml_rd)
+ rmse_bst[i] = RMSE(yhat,test_ml_rd$C)
+  
+#RF
+  random_forest<-train(C~PC1+PC2,data = train_ml_rd,trControl = trainControl(method = "repeatedcv" , index = folds2),method = "rf")
+ yhat = predict(random_forest,test_ml_rd)
+ rmse_rf[i] = RMSE(yhat,test_ml_rd$C)
+  
+#ridge
+  test_ml_raw<-subset(final_data,id%in% id_test )
+  train_ml_raw<-subset(final_data,id%!in% id_test)
+  test_ml_raw$C<-ifelse(test_ml_raw$C>=4,4,test_ml_raw$C)
+  train_ml_raw$C<-ifelse(train_ml_raw$C>=4,4,train_ml_raw$C)
+  ridge<-train(as.matrix(train_ml_raw[,c(1:146)]),as.numeric(train_ml_raw$C),trControl = trainControl(method = "repeatedcv" , index = folds2),method = "ridge")
+   ridge.yhat = predict(ridge,test_ml_raw)
+    rmse_ridge[i] = RMSE(ridge.yhat,test_ml_raw$C)
+#pls
+  pls_formual<-train(as.matrix(train_ml_raw[,c(1:146)]),as.numeric(train_ml_raw$C),trControl = trainControl(method = "repeatedcv" , index = folds2),method = "pls")
+   pls.yhat = predict(pls_formual,test_ml_raw)
+   rmse_pls[i] = RMSE(pls.yhat,test_ml_raw$C)
+}
+
+```
+
+```{r}
+report<-matrix(0,nrow = 5,ncol = 3)
+average<-c(mean(rmse_svm),mean(rmse_ridge),mean(rmse_pls),mean(rmse_rf),mean(rmse_bst))
+report[1,2:3]<-quantile(rmse_svm,c(0.025,0.975))
+report[2,2:3]<-quantile(rmse_ridge,c(0.025,0.975))
+report[3,2:3]<-quantile(rmse_pls,c(0.025,0.975))
+report[4,2:3]<-quantile(rmse_rf,c(0.025,0.975))
+report[5,2:3]<-quantile(rmse_bst,c(0.025,0.975))
+report[,1]<-average
+report<-as.data.frame(report)
+report$model=c("svm","ridge","pls","rf","bst")
+report
+```
+
+
+##Raw concentration
+### Load the data
+```{r}
+rm(list = ls())
+data = read_csv("project data.csv")
+final_data<-data[,1:148] #The features from impedance curve, which are the inputs in SML models
+colnames(final_data)[c(147,148)] = c("C","id")
+full_data = data[,149:150] #The features from ECM, which are the inputs for nonlinear regression
+full_data$id = final_data$id
+full_data$C = final_data$C
+pca<-prcomp(final_data[,c(1:146)],scale. = T)
+sum(pca$sdev[1]^2+pca$sdev[2]^2)/sum(pca$sdev^2) # variance explained
+rddata<-pca$x[,1:2] #select the first two components
+rddata<-as.data.frame(rddata)
+rddata$C<-final_data$C
+rddata$id<-final_data$id
+`%!in%` = Negate(`%in%`)
+RMSE<-function(yhat,y){
+  sqrt(mean((yhat-y)^2))
+}
+```
+
+
+```{r,warning=FALSE}
+rmse_svm<-numeric(0)
+rmse_ridge<-numeric(0)
+rmse_pls<-numeric(0)
+rmse_rf<-numeric(0)
+rmse_bst <- numeric(0)
+for (i in 1:100) {
+  set.seed(i)
+  print(i)
+  id_test<-sample(1:15,3)
+  test_ml_rd<-subset(rddata,id %in% id_test)
+  train_ml_rd<-subset(rddata,id %!in% id_test)
+  x<-rep(unique(train_ml_rd$id),each = 8)
+  folds<-groupKFold(x,k = length(unique(x))) 
+  folds2 <- lapply(folds, function(x) lapply(1:6, function(i) sample(x, size = length(x), replace = TRUE)))  ##sample the id 
+  folds2 <- unlist(folds2 , recursive = FALSE, use.names = TRUE)
+  svm_formual<-train(C~PC1+PC2,data = train_ml_rd,trControl = trainControl(method = "repeatedcv" , index = folds2),method = "svmRadial")
+  yhat = predict(svm_formual,test_ml_rd)
+  rmse_svm[i]<-RMSE(yhat,test_ml_rd$C)
+  
+#boost 
+  boost<-train(C~PC1+PC2,data = train_ml_rd,trControl = trainControl(method = "repeatedcv" , index = folds2),method = "BstLm")
+  yhat = predict(boost,test_ml_rd)
+ rmse_bst[i] = RMSE(yhat,test_ml_rd$C)
+  
+#RF
+  random_forest<-train(C~PC1+PC2,data = train_ml_rd,trControl = trainControl(method = "repeatedcv" , index = folds2),method = "rf")
+ yhat = predict(random_forest,test_ml_rd)
+ rmse_rf[i] = RMSE(yhat,test_ml_rd$C)
+  
+#ridge
+  test_ml_raw<-subset(final_data,id%in% id_test )
+  train_ml_raw<-subset(final_data,id%!in% id_test)
+  ridge<-train(as.matrix(train_ml_raw[,c(1:146)]),as.numeric(train_ml_raw$C),trControl = trainControl(method = "repeatedcv" , index = folds2),method = "ridge")
+   ridge.yhat = predict(ridge,test_ml_raw)
+    rmse_ridge[i] = RMSE(ridge.yhat,test_ml_raw$C)
+#pls
+  pls_formual<-train(as.matrix(train_ml_raw[,c(1:146)]),as.numeric(train_ml_raw$C),trControl = trainControl(method = "repeatedcv" , index = folds2),method = "pls")
+   pls.yhat = predict(pls_formual,test_ml_raw)
+   rmse_pls[i] = RMSE(pls.yhat,test_ml_raw$C)
+}
+```
+```{r}
+report<-matrix(0,nrow = 5,ncol = 3)
+average<-c(mean(rmse_svm),mean(rmse_ridge),mean(rmse_pls),mean(rmse_rf),mean(rmse_bst))
+report[1,2:3]<-quantile(rmse_svm,c(0.025,0.975))
+report[2,2:3]<-quantile(rmse_ridge,c(0.025,0.975))
+report[3,2:3]<-quantile(rmse_pls,c(0.025,0.975))
+report[4,2:3]<-quantile(rmse_rf,c(0.025,0.975))
+report[5,2:3]<-quantile(rmse_bst,c(0.025,0.975))
+report[,1]<-average
+report<-as.data.frame(report)
+report$model=c("svm","ridge","pls","rf","bst")
+report
+```
+
+### Combined method 
+## Method one
+```{r}
+rm(list = ls())
+data = read_csv("project data.csv")
+final_data<-data[,1:148] #The features from impedance curve, which are the inputs in SML models
+colnames(final_data)[c(147,148)] = c("C","id")
+full_data = data[,149:150] #The features from ECM, which are the inputs for nonlinear regression
+full_data$id = final_data$id
+full_data$C = final_data$C
+final_data$RCT<-full_data$RCT
+final_data$CF<-full_data$CF
+pca<-prcomp(final_data[,c(1:146,149:150)],scale. = T)
+sum(pca$sdev[1]^2+pca$sdev[2]^2)/sum(pca$sdev^2) # variance explained
+rddata<-pca$x[,1:2] #select the first two components
+rddata<-as.data.frame(rddata)
+rddata$C<-final_data$C
+rddata$id<-final_data$id
+`%!in%` = Negate(`%in%`)
+RMSE<-function(yhat,y){
+  sqrt(mean((yhat-y)^2))
+}
+```
+
+```{r,message=F,warning=F}
+rmse_svm<-numeric(0)
+rmse_ridge<-numeric(0)
+for (i in 1:100) {
+  set.seed(i)
+  print(i)
+  id_test<-sample(1:15,3)
+  test_ml_rd<-subset(rddata,id %in% id_test)
+  train_ml_rd<-subset(rddata,id %!in% id_test)
+  test_ml_rd$C<-ifelse(test_ml_rd$C>=4,4,test_ml_rd$C)#Transfer the C
+  train_ml_rd$C<-ifelse(train_ml_rd$C>=4,4,train_ml_rd$C)
+  x<-rep(unique(train_ml_rd$id),each = 8)
+  folds<-groupKFold(x,k = length(unique(x))) 
+  folds2 <- lapply(folds, function(x) lapply(1:6, function(i) sample(x, size = length(x), replace = TRUE)))  ##sample the id 
+  folds2 <- unlist(folds2 , recursive = FALSE, use.names = TRUE)
+  svm_formual<-train(C~PC1+PC2,data = train_ml_rd,trControl = trainControl(method = "repeatedcv" , index = folds2),method = "svmRadial")
+  yhat = predict(svm_formual,test_ml_rd)
+  rmse_svm[i]<-RMSE(yhat,test_ml_rd$C)
+#ridge
+  test_ml_raw<-subset(final_data,id%in% id_test )
+  train_ml_raw<-subset(final_data,id%!in% id_test)
+  test_ml_raw$C<-ifelse(test_ml_raw$C>=4,4,test_ml_raw$C)
+  train_ml_raw$C<-ifelse(train_ml_raw$C>=4,4,train_ml_raw$C)
+  ridge<-train(as.matrix(train_ml_raw[,c(1:146,149:150)]),as.numeric(train_ml_raw$C),trControl = trainControl(method = "repeatedcv" , index = folds2),method = "ridge")
+   ridge.yhat = predict(ridge,test_ml_raw)
+   rmse_ridge[i] = RMSE(ridge.yhat,test_ml_raw$C)
+}
+mean(rmse_ridge)
+quantile(rmse_ridge,c(0.025,0.975))
+mean(rmse_svm)
+quantile(rmse_svm,c(0.025,0.975))
+```
+
+
+## Method two
+```{r}
+rm(list = ls())
+data = read_csv("project data.csv")
+final_data<-data[,1:148] #The features from impedance curve, which are the inputs in SML models
+colnames(final_data)[c(147,148)] = c("C","id")
+full_data = data[,149:150] #The features from ECM, which are the inputs for nonlinear regression
+full_data$id = final_data$id
+full_data$C = final_data$C
+pca<-prcomp(final_data[,c(1:146)],scale. = T)
+sum(pca$sdev[1]^2+pca$sdev[2]^2)/sum(pca$sdev^2) # variance explained
+rddata<-pca$x[,1:2] #select the first two components
+rddata<-as.data.frame(rddata)
+`%!in%` = Negate(`%in%`)
+rddata$C<-final_data$C
+rddata$id<-final_data$id
+```
+
+```{r}
+gamsvm.RMSE = numeric(0)
+gamridge.RMSE = numeric(0)
+for (i in 1:100) {
+  set.seed(i)
+  print(i)
+  id_test = sample(1:15,3)
+  test_ml_rd<-subset(rddata,id %in% id_test)
+  train_ml_rd<-subset(rddata,id %!in% id_test)
+  test_ml_rd$C<-ifelse(test_ml_rd$C>=4,4,test_ml_rd$C)#Transfer the C
+  train_ml_rd$C<-ifelse(train_ml_rd$C>=4,4,train_ml_rd$C)
+  x<-rep(unique(train_ml_rd$id),each = 8)
+  folds<-groupKFold(x,k = length(unique(x))) 
+  folds2 <- lapply(folds, function(x) lapply(1:6, function(i) sample(x, size = length(x), replace = TRUE)))  ##sample the id 
+  folds2 <- unlist(folds2 , recursive = FALSE, use.names = TRUE)
+  svm_formual<-train(C~PC1+PC2,data = train_ml_rd,trControl = trainControl(method = "repeatedcv" , index = folds2),method = "svmRadial")
+  score = predict(svm_formual,rddata)
+  full_data$score = score
+  train_3predictors = subset(full_data,id %!in% id_test)
+  test_3predictors = subset(full_data,id %in% id_test)
+  train_3predictors$C =ifelse(train_3predictors$C>=4,4,train_3predictors$C)
+  test_3predictors$C =ifelse(test_3predictors$C>=4,4,test_3predictors$C)
+  gam.model<-gam(C~s(score)+s(RCT)+s(CF),data = train_3predictors)
+  gam.yhat<-predict(gam.model,test_3predictors)
+  gamsvm.RMSE[i] = RMSE(gam.yhat,test_3predictors$C)
+#Ridge regression
+  test_ml_raw<-subset(final_data,id%in% id_test )
+  train_ml_raw<-subset(final_data,id%!in% id_test)
+  test_ml_raw$C<-ifelse(test_ml_raw$C>=4,4,test_ml_raw$C)
+  train_ml_raw$C<-ifelse(train_ml_raw$C>=4,4,train_ml_raw$C)
+  ridge<-train(as.matrix(train_ml_raw[,c(1:146)]),as.numeric(train_ml_raw$C),trControl = trainControl(method = "repeatedcv" , index = folds2),method = "ridge")
+  ridge_score = predict(ridge,final_data)
+  full_data$score = ridge_score
+  train_3predictors = subset(full_data,id %!in% id_test)
+  test_3predictors = subset(full_data,id %in% id_test)
+  train_3predictors$C =ifelse(train_3predictors$C>=4,4,train_3predictors$C)
+  test_3predictors$C =ifelse(test_3predictors$C>=4,4,test_3predictors$C)
+  gam.model<-gam(C~s(score)+s(RCT)+s(CF),data = train_3predictors)
+  gam.yhat<-predict(gam.model,test_3predictors)
+  gamridge.RMSE[i] = RMSE(gam.yhat,test_3predictors$C)
+}
+
+
+mean(gamridge.RMSE)
+quantile(gamridge.RMSE,c(0.025,0.975))
+mean(gamsvm.RMSE)
+quantile(gamsvm.RMSE,c(0.025,0.975))
+```
+
+### New concentration
+```{r}
+rm(list = ls())
+data = read_csv("project data.csv")
+final_data<-data[,1:148] #The features from impedance curve, which are the inputs in SML models
+colnames(final_data)[c(147,148)] = c("C","id")
+full_data = data[,149:150] #The features from ECM, which are the inputs for nonlinear regression
+full_data$id = final_data$id
+full_data$C = final_data$C
+pca<-prcomp(final_data[,c(1:146)],scale. = T)
+sum(pca$sdev[1]^2+pca$sdev[2]^2)/sum(pca$sdev^2) # variance explained
+rddata<-pca$x[,1:2] #select the first two components
+rddata<-as.data.frame(rddata)
+rddata$C<-final_data$C
+rddata$id<-final_data$id
+`%!in%` = Negate(`%in%`)
+RMSE<-function(yhat,y){
+  sqrt(mean((yhat-y)^2))
+}
+```
+
+
+## Sample from 0~7
+```{r}
+rmse.svm= numeric(0)
+rmse.pls = numeric(0)
+rmse_ridge = numeric(0)
+for (i in 1:100) {
+  set.seed(i)
+  print(i)
+  Cid<-sample(0:7,2)
+  train_svm<-subset(rddata,C %!in% Cid)
+  test_svm<-subset(rddata,C %in% Cid)
+  x<-rep(unique(train_svm$id),each = nrow(train_svm)/15)
+  folds<-groupKFold(x,k = length(unique(x))) 
+  folds2 <- lapply(folds, function(x) lapply(1:6, function(i) sample(x, size = length(x), replace = TRUE)))  ##sample the id 
+  folds2 <- unlist(folds2 , recursive = FALSE, use.names = TRUE)
+  svm_formual<-train(C~PC1+PC2,data = train_svm,trControl = trainControl(method = "repeatedcv" , index = folds2),method = "svmRadial")
+  rmse.svm[i] = RMSE(predict(svm_formual,test_svm),test_svm$C)
+  
+  #PLS
+  train_ml_raw<-subset(final_data,C %!in% Cid)
+  test_ml_raw<-subset(final_data, C %in% Cid)
+  
+  pls_formual<-train(as.matrix(train_ml_raw[,1:146]),as.numeric(train_ml_raw$C),trControl = trainControl(method = "repeatedcv" , index = folds2),method = "pls")
+  rmse.pls[i] = RMSE(predict(pls_formual,test_ml_raw),test_ml_raw$C)
+  
+  ridge<-train(as.matrix(train_ml_raw[,1:146]),as.numeric(train_ml_raw$C),trControl = trainControl(method = "repeatedcv" , index = folds2),method = "ridge")
+  rmse_ridge[i]<-RMSE(predict(ridge,test_ml_raw),test_ml_raw$C)
+
+}
+mean(rmse.svm)
+quantile(rmse.svm,c(0.025,0.975))
+mean(rmse_ridge)
+quantile(rmse_ridge,c(0.025,0.975))
+mean(rmse.pls)
+quantile(rmse.pls,c(0.025,0.975))
+```
+
+## Sample from 1~6, the mediate concentrationn
+```{r}
+rmse.svm= numeric(0)
+rmse.pls = numeric(0)
+rmse_ridge = numeric(0)
+for (i in 1:100) {
+  set.seed(i)
+  print(i)
+  Cid<-sample(1:6,2)
+  train_svm<-subset(rddata,C %!in% Cid)
+  test_svm<-subset(rddata,C %in% Cid)
+  x<-rep(unique(train_svm$id),each = nrow(train_svm)/15)
+  folds<-groupKFold(x,k = length(unique(x))) 
+  folds2 <- lapply(folds, function(x) lapply(1:6, function(i) sample(x, size = length(x), replace = TRUE)))  ##sample the id 
+  folds2 <- unlist(folds2 , recursive = FALSE, use.names = TRUE)
+  svm_formual<-train(C~PC1+PC2,data = train_svm,trControl = trainControl(method = "repeatedcv" , index = folds2),method = "svmRadial")
+  rmse.svm[i] = RMSE(predict(svm_formual,test_svm),test_svm$C)
+  
+  #PLS
+  train_ml_raw<-subset(final_data,C %!in% Cid)
+  test_ml_raw<-subset(final_data, C %in% Cid)
+  
+  pls_formual<-train(as.matrix(train_ml_raw[,1:146]),as.numeric(train_ml_raw$C),trControl = trainControl(method = "repeatedcv" , index = folds2),method = "pls")
+  rmse.pls[i] = RMSE(predict(pls_formual,test_ml_raw),test_ml_raw$C)
+  
+  ridge<-train(as.matrix(train_ml_raw[,1:146]),as.numeric(train_ml_raw$C),trControl = trainControl(method = "repeatedcv" , index = folds2),method = "ridge")
+  rmse_ridge[i]<-RMSE(predict(ridge,test_ml_raw),test_ml_raw$C)
+
+}
+mean(rmse.svm)
+quantile(rmse.svm,c(0.025,0.975))
+mean(rmse_ridge)
+quantile(rmse_ridge,c(0.025,0.975))
+mean(rmse.pls)
+quantile(rmse.pls,c(0.025,0.975))
+```
+
+## All potential combination
+```{r}
+### Generate the index, my mathmatic combination function
+index = matrix(0,nrow = 28,ncol = 30)
+a = matrix(0,nrow = 28,ncol = 2)
+m = 1
+for (i in 0:6) {
+  for (j in (i+1):7) {
+    c = c(i,j)
+    index1 = (15*c[1]+1):(15*c[1]+15)
+    index2 = (15*c[2]+1):(15*c[2]+15)
+    index[m,] = c(index1,index2) 
+    a[m,] = c
+    m = m+1
+  }
+}
+label = character(0)
+for (i in 1:28) {
+  label[i] = paste(a[i,1],a[i,2]) 
+}
+```
+
+
+```{r}
+rmse.svm= numeric(0)
+rmse.pls = numeric(0)
+rmse_ridge = numeric(0)
+for (i in 1:28) {
+  print(i)
+  Cid<-a[i,]
+  train_svm<-subset(rddata,C %!in% Cid)
+  test_svm<-subset(rddata,C %in% Cid)
+  x<-rep(unique(train_svm$id),each = nrow(train_svm)/15)
+  folds<-groupKFold(x,k = length(unique(x))) 
+  folds2 <- lapply(folds, function(x) lapply(1:6, function(i) sample(x, size = length(x), replace = TRUE)))  ##sample the id 
+  folds2 <- unlist(folds2 , recursive = FALSE, use.names = TRUE)
+  svm_formual<-train(C~PC1+PC2,data = train_svm,trControl = trainControl(method = "repeatedcv" , index = folds2),method = "svmRadial")
+  rmse.svm[i] = RMSE(predict(svm_formual,test_svm),test_svm$C)
+  
+  #PLS
+  train_ml_raw<-subset(final_data,C %!in% Cid)
+  test_ml_raw<-subset(final_data, C %in% Cid)
+  
+  pls_formual<-train(as.matrix(train_ml_raw[,1:146]),as.numeric(train_ml_raw$C),trControl = trainControl(method = "repeatedcv" , index = folds2),method = "pls")
+  rmse.pls[i] = RMSE(predict(pls_formual,test_ml_raw),test_ml_raw$C)
+  
+  ridge<-train(as.matrix(train_ml_raw[,1:146]),as.numeric(train_ml_raw$C),trControl = trainControl(method = "repeatedcv" , index = folds2),method = "ridge")
+  rmse_ridge[i]<-RMSE(predict(ridge,test_ml_raw),test_ml_raw$C)
+
+}
+```
+
+```{r}
+### Table appendix s1
+report = matrix(0,nrow = 28,ncol = 4)
+report[,1] = label
+report[,3] = rmse.svm
+report[,2] = rmse_ridge
+report[,4] = rmse.pls
+```
+
+
+
+
+### Feature selection
+```{r}
+rm(list = ls())
+data = read_csv("project data.csv")
+final_data<-data[,1:148] #The features from impedance curve, which are the inputs in SML models
+colnames(final_data)[c(147,148)] = c("C","id")
+full_data = data[,149:150] #The features from ECM, which are the inputs for nonlinear regression
+full_data$id = final_data$id
+full_data$C = final_data$C
+pca<-prcomp(final_data[,c(1:146)],scale. = T)
+sum(pca$sdev[1]^2+pca$sdev[2]^2)/sum(pca$sdev^2) # variance explained
+rddata<-pca$x[,1:2] #select the first two components
+rddata<-as.data.frame(rddata)
+rddata$C<-final_data$C
+rddata$id<-final_data$id
+`%!in%` = Negate(`%in%`)
+RMSE<-function(yhat,y){
+  sqrt(mean((yhat-y)^2))
+}
+```
+
+
+```{r}
+my_subsampling = function(l,seed = 0,n){
+  set.seed(seed = seed)
+  score = rep(0,n)
+  score[1] = runif(1,0,1)
+  cutline = l/n
+  for (i in 1:72) {
+    score[i+1] = runif(1,0,1)
+    score[i+1] = ifelse(score[i]>cutline,score[i+1]-0.1,score[i+1]+0.1)
+  }
+  index = order(score,decreasing = F)[1:l]
+}
+```
+
+
+````{r}
+index = my_subsampling(30,5,73)
+index = sort(index)
+x = 1:73
+y = as.numeric(final_data[1,1:73])
+plot_data = data.frame(x = 1:73,y = as.numeric(final_data[1,1:73]))
+ggplot()+geom_line(aes(x = x,y= y))+geom_point(aes(x = x[index],y = y[index]),color = "red")+xlab("Frequency")+ylab("Signal")
+```
+
+
+```{r}
+## The sub ridge regression with smaller number of features 
+rmse_ridge07<-numeric(0)
+set.seed(1) #Can change the sample seed to test different combination
+index = my_subsampling(30,5,73)
+index = sort(index)
+subdata = final_data[,c(index,index+73)]
+subdata$C = final_data$C
+subdata$id = final_data$id
+time = proc.time()
+for (i in 1:100) {
+  set.seed(i)
+  print(i)
+  id_test<-sample(1:15,3)
+  test_ml_raw<-subset(subdata,id%in% id_test )
+  train_ml_raw<-subset(subdata,id%!in% id_test)
+  x<-rep(unique(train_ml_raw$id),each = 8)
+  folds<-groupKFold(x,k = length(unique(x))) 
+  folds2 <- lapply(folds, function(x) lapply(1:6, function(i) sample(x, size = length(x), replace = TRUE)))  ##sample the id 
+  folds2 <- unlist(folds2 , recursive = FALSE, use.names = TRUE)
+#ridge
+  ridge<-train(as.matrix(train_ml_raw[,1:60]),as.numeric(train_ml_raw$C),trControl = trainControl(method = "repeatedcv" , index = folds2),method = "ridge")
+  rmse_ridge07[i]<-RMSE(predict(ridge,test_ml_raw),test_ml_raw$C)
+}
+mean(rmse_ridge07)
+quantile(rmse_ridge07,c(0.025,0.975))
+```
+
+
+## Feature selection between curvess
+## Only use curve 1
+```{r}
+rm(list = ls())
+data = read_csv("project data.csv")
+final_data<-data[,1:148] #The features from impedance curve, which are the inputs in SML models
+colnames(final_data)[c(147,148)] = c("C","id")
+full_data = data[,149:150] #The features from ECM, which are the inputs for nonlinear regression
+full_data$id = final_data$id
+full_data$C = final_data$C
+pca<-prcomp(final_data[,c(1:73)],scale. = T)
+sum(pca$sdev[1]^2+pca$sdev[2]^2)/sum(pca$sdev^2) # variance explained
+rddata<-pca$x[,1:2] #select the first two components
+rddata<-as.data.frame(rddata)
+rddata$C<-final_data$C
+rddata$id<-final_data$id
+`%!in%` = Negate(`%in%`)
+RMSE<-function(yhat,y){
+  sqrt(mean((yhat-y)^2))
+}
+```
+
+
+```{r}
+rmse_svm07<-numeric(0)
+rmse_ridge07<-numeric(0)
+for (i in 1:100) {
+  set.seed(i)
+  print(i)
+  id_test<-sample(1:15,3)
+  test_ml_rd<-subset(rddata,id %in% id_test)
+  train_ml_rd<-subset(rddata,id %!in% id_test)
+  x<-rep(unique(train_ml_rd$id),each = 8)
+  folds<-groupKFold(x,k = length(unique(x))) 
+  folds2 <- lapply(folds, function(x) lapply(1:6, function(i) sample(x, size = length(x), replace = TRUE)))  ##sample the id 
+  folds2 <- unlist(folds2 , recursive = FALSE, use.names = TRUE)
+  svm_formual<-train(C~PC1+PC2,data = train_ml_rd,trControl = trainControl(method = "repeatedcv" , index = folds2),method = "svmRadial")
+  rmse_svm07[i]<-RMSE(predict(svm_formual,test_ml_rd),test_ml_rd$C)
+#ridge
+  test_ml_raw<-subset(final_data,id%in% id_test )
+  train_ml_raw<-subset(final_data,id%!in% id_test)
+  ridge<-train(as.matrix(train_ml_raw[,1:73]),as.numeric(train_ml_raw$C),trControl = trainControl(method = "repeatedcv" , index = folds2),method = "ridge")
+  rmse_ridge07[i]<-RMSE(predict(ridge,test_ml_raw),test_ml_raw$C)
+}
+mean(rmse_svm07)
+quantile(rmse_svm07,c(0.025,0.975))
+mean(rmse_ridge07)
+quantile(rmse_ridge07,c(0.025,0.975))
+```
+
+
+
+```{r}
+rm(list = ls())
+data = read_csv("project data.csv")
+final_data<-data[,1:148] #The features from impedance curve, which are the inputs in SML models
+colnames(final_data)[c(147,148)] = c("C","id")
+full_data = data[,149:150] #The features from ECM, which are the inputs for nonlinear regression
+full_data$id = final_data$id
+full_data$C = final_data$C
+pca<-prcomp(final_data[,c(74:146)],scale. = T)
+sum(pca$sdev[1]^2+pca$sdev[2]^2)/sum(pca$sdev^2) # variance explained
+rddata<-pca$x[,1:2] #select the first two components
+rddata<-as.data.frame(rddata)
+rddata$C<-final_data$C
+rddata$id<-final_data$id
+`%!in%` = Negate(`%in%`)
+RMSE<-function(yhat,y){
+  sqrt(mean((yhat-y)^2))
+}
+```
+
+
+```{r}
+rmse_svm<-numeric(0)
+rmse_ridge<-numeric(0)
+for (i in 1:100) {
+  set.seed(i)
+  print(i)
+  id_test<-sample(1:15,3)
+  test_ml_rd<-subset(rddata,id %in% id_test)
+  train_ml_rd<-subset(rddata,id %!in% id_test)
+  x<-rep(unique(train_ml_rd$id),each = 8)
+  folds<-groupKFold(x,k = length(unique(x))) 
+  folds2 <- lapply(folds, function(x) lapply(1:6, function(i) sample(x, size = length(x), replace = TRUE)))  ##sample the id 
+  folds2 <- unlist(folds2 , recursive = FALSE, use.names = TRUE)
+  svm_formual<-train(C~PC1+PC2,data = train_ml_rd,trControl = trainControl(method = "repeatedcv" , index = folds2),method = "svmRadial")
+  rmse_svm[i]<-RMSE(predict(svm_formual,test_ml_rd),test_ml_rd$C)
+  
+#ridge
+  test_ml_raw<-subset(final_data,id%in% id_test )
+  train_ml_raw<-subset(final_data,id%!in% id_test)
+  ridge<-train(as.matrix(train_ml_raw[,74:146]),as.numeric(train_ml_raw$C),trControl = trainControl(method = "repeatedcv" , index = folds2),method = "ridge")
+  rmse_ridge[i]<-RMSE(predict(ridge,test_ml_raw),test_ml_raw$C)
+}
+mean(rmse_svm07)
+quantile(rmse_svm07,c(0.025,0.975))
+mean(rmse_ridge07)
+quantile(rmse_ridge07,c(0.025,0.975))
+```
+
+###Figure S3
+```{r}
+graph <-read_excel("graph.xlsx")
+View(graph)
+p <- ggplot(graph, aes(x=data_type, y=RMSE, fill=model)) + 
+  geom_bar(stat="identity", position=position_dodge()) +
+               labs(x = "Data type",y = "Average RMSE",title = "Average RMSE for each statistical method")
+p + scale_fill_brewer(palette="Paired") + theme_minimal()
+```
+### XGBoosting and GBoosting trees
+```{r}
+rm(list = ls())
+data = read_csv("project data.csv")
+final_data<-data[,1:148] #The features from impedance curve, which are the inputs in SML models
+colnames(final_data)[c(147,148)] = c("C","id")
+full_data = data[,149:150] #The features from ECM, which are the inputs for nonlinear regression
+full_data$id = final_data$id
+full_data$C = final_data$C
+pca<-prcomp(final_data[,c(74:146)],scale. = T)
+sum(pca$sdev[1]^2+pca$sdev[2]^2)/sum(pca$sdev^2) # variance explained
+rddata<-pca$x[,1:2] #select the first two components
+rddata<-as.data.frame(rddata)
+rddata$C<-final_data$C
+rddata$id<-final_data$id
+`%!in%` = Negate(`%in%`)
+RMSE<-function(yhat,y){
+  sqrt(mean((yhat-y)^2))
+}
+```
+
+
+```{r}
+library(gbm)
+xgbGrid <- expand.grid(nrounds = 100,  # this is n_estimators in the python code above
+                       max_depth = 3,
+                       colsample_bytree = 0.5,
+                       ## The values below are default values in the sklearn-api. 
+                       eta = 0.025,
+                       gamma=0,
+                       min_child_weight = 1,
+                       subsample = 1
+)
+xgb_raw=numeric(0)
+gb_raw_rmse = numeric(0)
+final_data$C = ifelse(final_data$C>4,4,final_data$C)
+for (i in 1:100) {
+  set.seed(i)
+  id_test = sample(1:15,3)
+  test_ml_raw<-subset(final_data,id %in% id_test)
+  test_ml_raw = test_ml_raw[,-148]
+  train_ml_raw<-subset(final_data,id %!in% id_test)
+  train_ml_raw = train_ml_raw[,-148]
+  gb_raw<-train(C~.,data = train_ml_raw,
+                trControl = trainControl(method = "none"),
+                method = "xgbTree",tuneGrid = xgbGrid)
+  gb_raw_hat = predict(gb_raw,test_ml_raw)
+  xgb_raw[i] = RMSE(gb_raw_hat,test_ml_raw$C)
+  gb_raw<-gbm(C~.,data = train_ml_raw,
+              shrinkage = 0.05,n.trees = 100,distribution = "gaussian")
+  gb_raw_hat = predict(gb_raw,test_ml_raw)
+  gb_raw_rmse[i] = RMSE(gb_raw_hat,test_ml_raw$C)
+}
+mean(xgb_raw)
+quantile(xgb_raw,c(0.025,0.975))
+mean(gb_raw_rmse)
+quantile(gb_raw_rmse,c(0.025,0.975))
+
+
+```
